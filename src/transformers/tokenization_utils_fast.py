@@ -12,27 +12,25 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
- Tokenization classes for fast tokenizers (provided by HuggingFace's tokenizers library). For slow (python) tokenizers
- see tokenization_utils.py
+""" Tokenization classes for fast tokenizers (provided by HuggingFace's tokenizers library).
+    For slow (python) tokenizers see tokenization_utils.py
 """
 
-import json
 import os
+import warnings
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from tokenizers import Encoding as EncodingFast
-from tokenizers import Tokenizer as TokenizerFast
 from tokenizers.decoders import Decoder as DecoderFast
+from tokenizers.implementations import BaseTokenizer as BaseTokenizerFast
 
-from .convert_slow_tokenizer import convert_slow_tokenizer
-from .file_utils import PaddingStrategy, add_end_docstrings
-from .tokenization_utils import PreTrainedTokenizer
+from .file_utils import add_end_docstrings
 from .tokenization_utils_base import (
     INIT_TOKENIZER_DOCSTRING,
     AddedToken,
     BatchEncoding,
+    PaddingStrategy,
     PreTokenizedInput,
     PreTokenizedInputPair,
     PreTrainedTokenizerBase,
@@ -46,22 +44,12 @@ from .utils import logging
 logger = logging.get_logger(__name__)
 
 
-# Fast tokenizers (provided by HuggingFace tokenizer's library) can be saved in a single file
-TOKENIZER_FILE = "tokenizer.json"
-SPECIAL_TOKENS_MAP_FILE = "special_tokens_map.json"
-TOKENIZER_CONFIG_FILE = "tokenizer_config.json"
-
-# Slow tokenizers have an additional added tokens files
-ADDED_TOKENS_FILE = "added_tokens.json"
-
-INIT_TOKENIZER_DOCSTRING += """
-        tokenizer_object (:class:`tokenizers.Tokenizer`):
-            A :class:`tokenizers.Tokenizer` object from 🤗 tokenizers to instantiate from. See :doc:`Using tokenizers
-            from 🤗 tokenizers <../fast_tokenizers>` for more information.
-"""
-
-
-@add_end_docstrings(INIT_TOKENIZER_DOCSTRING)
+@add_end_docstrings(
+    INIT_TOKENIZER_DOCSTRING,
+    """
+    .. automethod:: __call__
+    """,
+)
 class PreTrainedTokenizerFast(PreTrainedTokenizerBase):
     """
     Base class for all fast tokenizers (wrapping HuggingFace tokenizers library).
@@ -71,51 +59,17 @@ class PreTrainedTokenizerFast(PreTrainedTokenizerBase):
     Handles all the shared methods for tokenization and special tokens, as well as methods for
     downloading/caching/loading pretrained tokenizers, as well as adding tokens to the vocabulary.
 
-    This class also contains the added tokens in a unified way on top of all tokenizers so we don't have to handle the
-    specific vocabulary augmentation methods of the various underlying dictionary structures (BPE, sentencepiece...).
+    This class also contains the added tokens in a unified way on top of all tokenizers so we don't
+    have to handle the specific vocabulary augmentation methods of the various underlying
+    dictionary structures (BPE, sentencepiece...).
     """
 
-    slow_tokenizer_class: PreTrainedTokenizer = None
-
-    def __init__(self, *args, **kwargs):
-        tokenizer_object = kwargs.pop("tokenizer_object", None)
-        slow_tokenizer = kwargs.pop("__slow_tokenizer", None)
-        fast_tokenizer_file = kwargs.pop("tokenizer_file", None)
-        from_slow = kwargs.pop("from_slow", False)
-
-        if from_slow and slow_tokenizer is None and self.slow_tokenizer_class is None:
+    def __init__(self, tokenizer: BaseTokenizerFast, **kwargs):
+        if not isinstance(tokenizer, BaseTokenizerFast):
             raise ValueError(
-                "Cannot instantiate this tokenizer from a slow version. If it's based on sentencepiece, make sure you "
-                "have sentencepiece installed."
+                "Tokenizer should be an instance of a BaseTokenizer " "provided by HuggingFace tokenizers library."
             )
-
-        if tokenizer_object is not None:
-            fast_tokenizer = tokenizer_object
-        elif fast_tokenizer_file is not None and not from_slow:
-            # We have a serialization from tokenizers which let us directly build the backend
-            fast_tokenizer = TokenizerFast.from_file(fast_tokenizer_file)
-        elif slow_tokenizer is not None:
-            # We need to convert a slow tokenizer to build the backend
-            fast_tokenizer = convert_slow_tokenizer(slow_tokenizer)
-        elif self.slow_tokenizer_class is not None:
-            # We need to create and convert a slow tokenizer to build the backend
-            slow_tokenizer = self.slow_tokenizer_class(*args, **kwargs)
-            fast_tokenizer = convert_slow_tokenizer(slow_tokenizer)
-        else:
-            raise ValueError(
-                "Couldn't instantiate the backend tokenizer from one of: \n"
-                "(1) a `tokenizers` library serialization file, \n"
-                "(2) a slow tokenizer instance to convert or \n"
-                "(3) an equivalent slow tokenizer class to instantiate and convert. \n"
-                "You need to have sentencepiece installed to convert a slow tokenizer to a fast one."
-            )
-
-        self._tokenizer = fast_tokenizer
-
-        if slow_tokenizer is not None:
-            kwargs.update(slow_tokenizer.init_kwargs)
-
-        self._decode_use_source_tokenizer = False
+        self._tokenizer: BaseTokenizerFast = tokenizer
 
         # We call this after having initialized the backend tokenizer because we update it.
         super().__init__(**kwargs)
@@ -132,11 +86,16 @@ class PreTrainedTokenizerFast(PreTrainedTokenizerBase):
         return self._tokenizer.get_vocab_size(with_added_tokens=False)
 
     def get_vocab(self) -> Dict[str, int]:
-        return self._tokenizer.get_vocab(with_added_tokens=True)
+        """
+        Returns the vocabulary as a dictionary of token to index.
 
-    @property
-    def vocab(self) -> Dict[str, int]:
-        return self.get_vocab()
+        :obj:`tokenizer.get_vocab()[token]` is equivalent to :obj:`tokenizer.convert_tokens_to_ids(token)` when
+        :obj:`token` is in the vocab.
+
+        Returns:
+            :obj:`Dict[str, int]`: The vocabulary.
+        """
+        return self._tokenizer.get_vocab(with_added_tokens=True)
 
     def get_added_vocab(self) -> Dict[str, int]:
         """
@@ -157,7 +116,7 @@ class PreTrainedTokenizerFast(PreTrainedTokenizerBase):
         return self._tokenizer.get_vocab_size(with_added_tokens=True)
 
     @property
-    def backend_tokenizer(self) -> TokenizerFast:
+    def backend_tokenizer(self) -> BaseTokenizerFast:
         """
         :obj:`tokenizers.implementations.BaseTokenizer`: The Rust tokenizer used as a backend.
         """
@@ -180,13 +139,11 @@ class PreTrainedTokenizerFast(PreTrainedTokenizerBase):
         return_offsets_mapping: bool = False,
         return_length: bool = False,
         verbose: bool = True,
-    ) -> Tuple[Dict[str, Any], List[EncodingFast]]:
-        """
-        Convert the encoding representation (from low-level HuggingFace tokenizer output) to a python Dict and a list
-        of encodings, take care of building a batch from overflowing tokens.
+    ) -> Dict[str, Any]:
+        """Convert the encoding representation (from low-level HuggingFace tokenizer output) to a python Dict.
 
-        Overflowing tokens are converted to additional examples (like batches) so the output values of the dict are
-        lists (overflows) of lists (tokens).
+        Overflowing tokens are converted to additional examples (like batches) so the output values of
+        the dict are lists (overflows) of lists (tokens).
 
         Output shape: (overflows, sequence length)
         """
@@ -215,7 +172,7 @@ class PreTrainedTokenizerFast(PreTrainedTokenizerBase):
             if return_length:
                 encoding_dict["length"].append(len(e.ids))
 
-        return encoding_dict, encodings
+        return encoding_dict
 
     def convert_tokens_to_ids(self, tokens: Union[str, List[str]]) -> Union[int, List[int]]:
         """
@@ -223,7 +180,7 @@ class PreTrainedTokenizerFast(PreTrainedTokenizerBase):
         vocabulary.
 
         Args:
-            tokens (:obj:`str` or :obj:`List[str]`): One or several token(s) to convert to token id(s).
+            token (:obj:`str` or :obj:`List[str]`): One or several token(s) to convert to token id(s).
 
         Returns:
             :obj:`int` or :obj:`List[int]`: The token id or list of token ids.
@@ -276,8 +233,8 @@ class PreTrainedTokenizerFast(PreTrainedTokenizerBase):
         self, ids: Union[int, List[int]], skip_special_tokens: bool = False
     ) -> Union[str, List[str]]:
         """
-        Converts a single index or a sequence of indices in a token or a sequence of tokens, using the vocabulary and
-        added tokens.
+        Converts a single index or a sequence of indices in a token or a sequence of tokens, using the vocabulary
+        and added tokens.
 
         Args:
             ids (:obj:`int` or :obj:`List[int]`):
@@ -298,8 +255,22 @@ class PreTrainedTokenizerFast(PreTrainedTokenizerBase):
             tokens.append(self._tokenizer.id_to_token(index))
         return tokens
 
-    def tokenize(self, text: str, pair: Optional[str] = None, add_special_tokens: bool = False, **kwargs) -> List[str]:
-        return self.encode_plus(text=text, text_pair=pair, add_special_tokens=add_special_tokens, **kwargs).tokens()
+    def tokenize(self, text: str, pair: Optional[str] = None, add_special_tokens: bool = False) -> List[str]:
+        """
+        Converts a string in a sequence of tokens, using the backend Rust tokenizer.
+
+        Args:
+            text (:obj:`str`):
+                The sequence to be encoded.
+            pair (:obj:`str`, `optional`):
+                A second sequence to be encoded with the first.
+            add_special_tokens (:obj:`bool`, `optional`, defaults to :obj:`False`):
+                Whether or not to add the special tokens associated with the corresponding model.
+
+        Returns:
+            :obj:`List[str]`: The list of tokens.
+        """
+        return self._tokenizer.encode(text, pair, add_special_tokens=add_special_tokens).tokens
 
     def set_truncation_and_padding(
         self,
@@ -318,7 +289,7 @@ class PreTrainedTokenizerFast(PreTrainedTokenizerBase):
         section.
 
         Args:
-            padding_strategy (:class:`~transformers.file_utils.PaddingStrategy`):
+            padding_strategy (:class:`~transformers.tokenization_utils_base.PaddingStrategy`):
                 The kind of padding that will be applied to the input
             truncation_strategy (:class:`~transformers.tokenization_utils_base.TruncationStrategy`):
                 The kind of truncation that will be applied to the input
@@ -368,10 +339,23 @@ class PreTrainedTokenizerFast(PreTrainedTokenizerBase):
         return_offsets_mapping: bool = False,
         return_length: bool = False,
         verbose: bool = True,
+        **kwargs
     ) -> BatchEncoding:
 
         if not isinstance(batch_text_or_text_pairs, list):
-            raise TypeError(f"batch_text_or_text_pairs has to be a list (got {type(batch_text_or_text_pairs)})")
+            raise ValueError(
+                "batch_text_or_text_pairs has to be a list (got {})".format(type(batch_text_or_text_pairs))
+            )
+
+        if "is_pretokenized" in kwargs:
+            warnings.warn(
+                "`is_pretokenized` is deprecated and will be removed in a future version, use `is_split_into_words` instead.",
+                FutureWarning,
+            )
+            is_split_into_words = kwargs.pop("is_pretokenized")
+
+        if kwargs:
+            raise ValueError(f"Keyword arguments {kwargs} not recognized.")
 
         # Set the truncation and padding strategy and restore the initial configuration
         self.set_truncation_and_padding(
@@ -382,19 +366,34 @@ class PreTrainedTokenizerFast(PreTrainedTokenizerBase):
             pad_to_multiple_of=pad_to_multiple_of,
         )
 
-        encodings = self._tokenizer.encode_batch(
-            batch_text_or_text_pairs,
-            add_special_tokens=add_special_tokens,
-            is_pretokenized=is_split_into_words,
-        )
+        # Avoid thread overhead if only one example.
+        if len(batch_text_or_text_pairs) == 1:
+            if isinstance(batch_text_or_text_pairs[0], tuple):
+                # We got a Tuple with a pair of sequences
+                encodings = self._tokenizer.encode(
+                    *batch_text_or_text_pairs[0],
+                    add_special_tokens=add_special_tokens,
+                    is_pretokenized=is_split_into_words,
+                )
+            else:
+                # We got a single sequence
+                encodings = self._tokenizer.encode(
+                    batch_text_or_text_pairs[0],
+                    add_special_tokens=add_special_tokens,
+                    is_pretokenized=is_split_into_words,
+                )
+            encodings = [encodings]
+        else:
+            encodings = self._tokenizer.encode_batch(
+                batch_text_or_text_pairs,
+                add_special_tokens=add_special_tokens,
+                is_pretokenized=is_split_into_words,
+            )
 
         # Convert encoding to dict
-        # `Tokens` has type: Tuple[
-        #                       List[Dict[str, List[List[int]]]] or List[Dict[str, 2D-Tensor]],
-        #                       List[EncodingFast]
-        #                    ]
+        # `Tokens` has type: List[Dict[str, List[List[int]]]] or List[Dict[str, 2D-Tensor]]
         # with nested dimensions corresponding to batch, overflows, sequence length
-        tokens_and_encodings = [
+        tokens = [
             self._convert_encoding(
                 encoding=encoding,
                 return_token_type_ids=return_token_type_ids,
@@ -408,29 +407,22 @@ class PreTrainedTokenizerFast(PreTrainedTokenizerBase):
             for encoding in encodings
         ]
 
-        # Convert the output to have dict[list] from list[dict] and remove the additional overflows dimension
-        # From (variable) shape (batch, overflows, sequence length) to ~ (batch * overflows, sequence length)
-        # (we say ~ because the number of overflow varies with the example in the batch)
-        #
-        # To match each overflowing sample with the original sample in the batch
-        # we add an overflow_to_sample_mapping array (see below)
-        sanitized_tokens = {}
-        for key in tokens_and_encodings[0][0].keys():
-            stack = [e for item, _ in tokens_and_encodings for e in item[key]]
-            sanitized_tokens[key] = stack
-        sanitized_encodings = [e for _, item in tokens_and_encodings for e in item]
+        # Convert the output to have dict[list] from list[dict]
+        sanitized = {}
+        for key in tokens[0].keys():
+            # To List[List[List[int]]] of shape (batch, overflows, sequence length)
+            stack = [e for item in tokens for e in item[key]]
+            sanitized[key] = stack
 
         # If returning overflowing tokens, we need to return a mapping
         # from the batch idx to the original sample
         if return_overflowing_tokens:
             overflow_to_sample_mapping = []
-            for i, (toks, _) in enumerate(tokens_and_encodings):
-                overflow_to_sample_mapping += [i] * len(toks["input_ids"])
-            sanitized_tokens["overflow_to_sample_mapping"] = overflow_to_sample_mapping
+            for i, enc in enumerate(tokens):
+                overflow_to_sample_mapping += [i] * len(enc["input_ids"])
+            sanitized["overflow_to_sample_mapping"] = overflow_to_sample_mapping
 
-        for input_ids in sanitized_tokens["input_ids"]:
-            self._eventual_warn_about_too_long_sequence(input_ids, max_length, verbose)
-        return BatchEncoding(sanitized_tokens, sanitized_encodings, tensor_type=return_tensors)
+        return BatchEncoding(sanitized, encodings, tensor_type=return_tensors)
 
     def _encode_plus(
         self,
@@ -453,6 +445,12 @@ class PreTrainedTokenizerFast(PreTrainedTokenizerBase):
         verbose: bool = True,
         **kwargs
     ) -> BatchEncoding:
+        if "is_pretokenized" in kwargs:
+            warnings.warn(
+                "`is_pretokenized` is deprecated and will be removed in a future version, use `is_split_into_words` instead.",
+                FutureWarning,
+            )
+            is_split_into_words = kwargs.pop("is_pretokenized")
 
         batched_input = [(text, text_pair)] if text_pair else [text]
         batched_output = self._batch_encode_plus(
@@ -476,7 +474,7 @@ class PreTrainedTokenizerFast(PreTrainedTokenizerBase):
         )
 
         # Return tensor is None, then we can remove the leading batch axis
-        # Overflowing tokens are returned as a batch of output so we keep them in this case
+        # Overfolwing tokens are returned as a batch of output so we keep them in this case
         if return_tensors is None and not return_overflowing_tokens:
             batched_output = BatchEncoding(
                 {
@@ -486,24 +484,28 @@ class PreTrainedTokenizerFast(PreTrainedTokenizerBase):
                 batched_output.encodings,
             )
 
-        self._eventual_warn_about_too_long_sequence(batched_output["input_ids"], max_length, verbose)
-
         return batched_output
 
-    def convert_tokens_to_string(self, tokens: List[str]) -> str:
-        return self.backend_tokenizer.decoder.decode(tokens)
-
-    def _decode(
-        self,
-        token_ids: Union[int, List[int]],
-        skip_special_tokens: bool = False,
-        clean_up_tokenization_spaces: bool = True,
-        **kwargs
+    def decode(
+        self, token_ids: List[int], skip_special_tokens: bool = False, clean_up_tokenization_spaces: bool = True
     ) -> str:
-        self._decode_use_source_tokenizer = kwargs.pop("use_source_tokenizer", False)
+        """
+        Converts a sequence of ids in a string, using the tokenizer and vocabulary
+        with options to remove special tokens and clean up tokenization spaces.
 
-        if isinstance(token_ids, int):
-            token_ids = [token_ids]
+        Similar to doing ``self.convert_tokens_to_string(self.convert_ids_to_tokens(token_ids))``.
+
+        Args:
+            token_ids (:obj:`List[int]`):
+                List of tokenized input ids. Can be obtained using the ``__call__`` method.
+            skip_special_tokens (:obj:`bool`, `optional`, defaults to :obj:`False`):
+                Whether or not to remove special tokens in the decoding.
+            clean_up_tokenization_spaces (:obj:`bool`, `optional`, defaults to :obj:`True`):
+                Whether or not to clean up the tokenization spaces.
+
+        Returns:
+            :obj:`str`: The decoded sentence.
+        """
         text = self._tokenizer.decode(token_ids, skip_special_tokens=skip_special_tokens)
 
         if clean_up_tokenization_spaces:
@@ -512,40 +514,25 @@ class PreTrainedTokenizerFast(PreTrainedTokenizerBase):
         else:
             return text
 
-    def _save_pretrained(
-        self,
-        save_directory: Union[str, os.PathLike],
-        file_names: Tuple[str],
-        legacy_format: Optional[bool] = None,
-        filename_prefix: Optional[str] = None,
-    ) -> Tuple[str]:
+    def save_vocabulary(self, save_directory: str) -> Tuple[str]:
         """
-        Save a tokenizer using the slow-tokenizer/legacy format: vocabulary + added tokens as well as in a unique JSON
-        file containing {config + vocab + added-tokens}.
+        Save the tokenizer vocabulary to a directory. This method does *NOT* save added tokens
+        and special token mappings.
+
+        .. warning::
+            Please use :meth:`~transformers.PreTrainedTokenizer.save_pretrained` to save the full tokenizer state if
+            you want to reload it using the :meth:`~transformers.PreTrainedTokenizer.from_pretrained` class method.
+
+        Args:
+            save_directory (:obj:`str`): The path to adirectory where the tokenizer will be saved.
+
+        Returns:
+            A tuple of :obj:`str`: The files saved.
         """
-        save_directory = str(save_directory)
+        if os.path.isdir(save_directory):
+            files = self._tokenizer.save_model(save_directory)
+        else:
+            folder, file = os.path.split(os.path.abspath(save_directory))
+            files = self._tokenizer.save_model(folder, name=file)
 
-        save_slow = legacy_format is None or legacy_format is True
-        save_fast = legacy_format is None or legacy_format is False
-
-        if save_slow:
-            added_tokens_file = os.path.join(
-                save_directory, (filename_prefix + "-" if filename_prefix else "") + ADDED_TOKENS_FILE
-            )
-            added_vocab = self.get_added_vocab()
-            if added_vocab:
-                with open(added_tokens_file, "w", encoding="utf-8") as f:
-                    out_str = json.dumps(added_vocab, ensure_ascii=False)
-                    f.write(out_str)
-
-            vocab_files = self.save_vocabulary(save_directory, filename_prefix=filename_prefix)
-            file_names = file_names + vocab_files + (added_tokens_file,)
-
-        if save_fast:
-            tokenizer_file = os.path.join(
-                save_directory, (filename_prefix + "-" if filename_prefix else "") + TOKENIZER_FILE
-            )
-            self.backend_tokenizer.save(tokenizer_file)
-            file_names = file_names + (tokenizer_file,)
-
-        return file_names
+        return tuple(files)
