@@ -756,7 +756,9 @@ class ModuleUtilsMixin:
         """
         if dtype is None:
             dtype = self.dtype
-
+        #tensor([[0, 0, 0, 0, 0, 0, 1, 1, 1, 1]])
+        # tensor([[[[-3.4028e+38, -3.4028e+38, -3.4028e+38, -3.4028e+38, -3.4028e+38,
+        #            -3.4028e+38, -0.0000e+00, -0.0000e+00, -0.0000e+00, -0.0000e+00]]]])
         if not (attention_mask.dim() == 2 and self.config.is_decoder):
             # show warning only if it won't be shown in `create_extended_attention_mask_for_decoder`
             if device is not None:

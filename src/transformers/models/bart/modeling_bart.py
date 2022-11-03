@@ -44,6 +44,17 @@ from ...utils import (
     replace_return_docstrings,
 )
 from .configuration_bart import BartConfig
+import pickle
+def pickle_load(path):
+    """pickle.load(path)"""
+    with open(path, "rb") as f:
+        return pickle.load(f)
+
+
+def pickle_save(obj, path):
+    """pickle.dump(obj, path)"""
+    with open(path, "wb") as f:
+        return pickle.dump(obj, f)
 
 
 logger = logging.get_logger(__name__)
@@ -803,11 +814,25 @@ class BartEncoder(BartPretrainedModel):
 
         embed_pos = self.embed_positions(input)
         embed_pos = embed_pos.to(inputs_embeds.device)
+        idx = torch.arange(attention_mask.shape[1], 0, -1)
+        tmp2 = attention_mask * idx
+        indices = torch.argmax(tmp2, 1, keepdim=True)
+        embed_pos = torch.roll(embed_pos, shifts=indices[0][0].item(), dims=1)
+
+        # new_embed = embed_pos.clone()
+        # if embed_pos.shape[1] == 10:
+        #     new_embed[:, 4:,:] = embed_pos[:,:-4,:]
+        #     new_embed[:, :4, :] = torch.zeros(embed_pos[:, :4, :].shape,device=inputs_embeds.device)
+        #todo fn that takes in attention mask and shifts
+        # embed_pos = new_embed.clone()
+        # print(embed_pos.shape)
+        # print('EMBED_POS', embed_pos)
 
         hidden_states = inputs_embeds + embed_pos
         hidden_states = self.layernorm_embedding(hidden_states)
         hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
 
+        # tensor([[0, 0, 0, 0, 1, 1, 1, 1, 1, 1]])
         # expand attention_mask
         if attention_mask is not None:
             # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
@@ -1032,7 +1057,9 @@ class BartDecoder(BartPretrainedModel):
         past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
 
         if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input) * self.embed_scale
+            inputs_embeds = self.embed_tokens(input) * self.embed_scale # 2 * 1
+            #[[8.4167e-02, -3.8940e-02, 9.6359e-03
+        # 3.5675e-02]]]
 
         attention_mask = self._prepare_decoder_attention_mask(
             attention_mask, input_shape, inputs_embeds, past_key_values_length
@@ -1046,7 +1073,17 @@ class BartDecoder(BartPretrainedModel):
         # embed positions
         positions = self.embed_positions(input, past_key_values_length)
         positions = positions.to(inputs_embeds.device)
+        positions = torch.roll(positions, shifts=2, dims=1)
 
+        # if attention_mask is not None:
+        #     idx = torch.arange(attention_mask.shape[1], 0, -1)
+        #     tmp2 = attention_mask * idx
+        #     indices = torch.argmax(tmp2, 1, keepdim=True)
+        #     positions = torch.roll(positions, shifts=indices[0][0].item(), dims=1)
+        print('positions',positions)
+        # tensor([[-0.0114, -0.0169, -0.0184, ..., -0.0131, -0.0043, -0.0053],
+        #         [-0.0114, -0.0169, -0.0184, ..., -0.0131, -0.0043, -0.0053],
+        #         [0.0842, -0.0389, 0.0096, ..., 0.0583, 0.0082, 0.0357]]
         hidden_states = inputs_embeds + positions
         hidden_states = self.layernorm_embedding(hidden_states)
 
@@ -1244,11 +1281,20 @@ class BartModel(BartPretrainedModel):
                 hidden_states=encoder_outputs[1] if len(encoder_outputs) > 1 else None,
                 attentions=encoder_outputs[2] if len(encoder_outputs) > 2 else None,
             )
-
+        # print(encoder_outputs[0])
+        # print(encoder_outputs[0][:,4:,:])
+        #
+        # print(encoder_outputs[0].shape)
+        # if encoder_outputs[0].shape[1] == 6:
+        # # torch.save(encoder_outputs[0],'enc')
+        #     x = torch.load('enc')
+        #     encoder_outputs[0][:,:,:] = x[:,4:,:]
+        # pickle_save(encoder_outputs[0],'enc.pickle')
+        # encoder_outputs[0] = pickle_load('enc.pickle')
         # decoder outputs consists of (dec_features, past_key_value, dec_hidden, dec_attn)
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
-            attention_mask=decoder_attention_mask,
+            attention_mask=decoder_attention_mask, # None -3.4028e+38,
             encoder_hidden_states=encoder_outputs[0],
             encoder_attention_mask=attention_mask,
             head_mask=decoder_head_mask,
